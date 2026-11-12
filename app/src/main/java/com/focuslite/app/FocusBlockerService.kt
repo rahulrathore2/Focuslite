@@ -87,10 +87,11 @@ class FocusBlockerService : AccessibilityService() {
         super.onServiceConnected()
         Log.i(TAG, "FocusBlockerService connected and active.")
 
-        // Configure dynamic service parameters
+        // Configure dynamic service parameters safely preserving target package filter
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        info.packageNames = arrayOf(PACKAGE_YOUTUBE, PACKAGE_INSTAGRAM)
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
@@ -108,29 +109,50 @@ class FocusBlockerService : AccessibilityService() {
             return
         }
 
-        // Only process window state changes and content mutations
-        val eventType = event.eventType
-        if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) {
-            return
-        }
-
         // Check rate limiting / debounce
         val now = System.currentTimeMillis()
         if (now - lastBackActionTimestamp < BACK_ACTION_COOLDOWN_MS) {
             return
         }
 
-        // Inspect UI node hierarchy
-        val rootNode = rootInActiveWindow ?: return
+        val className = event.className?.toString() ?: ""
+
+        // Fast-path 1: Instant detection via YouTube Shorts Activity name
+        if (packageName == PACKAGE_YOUTUBE &&
+            preferencesManager.isBlockYouTubeShortsEnabled() &&
+            className.contains("ReelWatchActivity", ignoreCase = true)
+        ) {
+            Log.d(TAG, "Detected YouTube Shorts via ReelWatchActivity!")
+            executeBlockAction(
+                message = "YouTube Short blocked by FocusLite",
+                onIncrement = { preferencesManager.incrementShortsBlockedCount() }
+            )
+            return
+        }
+
+        // Fast-path 2: Instant detection via Instagram Reels viewer activity
+        if (packageName == PACKAGE_INSTAGRAM &&
+            preferencesManager.isBlockInstagramReelsEnabled() &&
+            (className.contains("ClipsViewer", ignoreCase = true) ||
+             (className.contains("ModalActivity", ignoreCase = true) && event.text?.any { it.contains("Reels", ignoreCase = true) } == true))
+        ) {
+            Log.d(TAG, "Detected Instagram Reels via ClipsViewer / ModalActivity!")
+            executeBlockAction(
+                message = "Instagram Reel blocked by FocusLite",
+                onIncrement = { preferencesManager.incrementReelsBlockedCount() }
+            )
+            return
+        }
+
+        // Inspect UI node hierarchy (using rootInActiveWindow with fallback to event.source)
+        val rootNode = rootInActiveWindow ?: event.source ?: return
 
         try {
             when (packageName) {
                 PACKAGE_YOUTUBE -> {
                     if (preferencesManager.isBlockYouTubeShortsEnabled()) {
                         if (isYouTubeShortsPresent(rootNode)) {
-                            Log.d(TAG, "YouTube Shorts detected! Executing blocking action...")
+                            Log.d(TAG, "YouTube Shorts detected in node tree! Executing blocking action...")
                             executeBlockAction(
                                 message = "YouTube Short blocked by FocusLite",
                                 onIncrement = { preferencesManager.incrementShortsBlockedCount() }
@@ -142,7 +164,7 @@ class FocusBlockerService : AccessibilityService() {
                 PACKAGE_INSTAGRAM -> {
                     if (preferencesManager.isBlockInstagramReelsEnabled()) {
                         if (isInstagramReelsPresent(rootNode)) {
-                            Log.d(TAG, "Instagram Reel detected! Executing blocking action...")
+                            Log.d(TAG, "Instagram Reel detected in node tree! Executing blocking action...")
                             executeBlockAction(
                                 message = "Instagram Reel blocked by FocusLite",
                                 onIncrement = { preferencesManager.incrementReelsBlockedCount() }
@@ -154,9 +176,10 @@ class FocusBlockerService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error while inspecting accessibility node tree", e)
         } finally {
-            // Root node must be recycled on older APIs to prevent memory leaks
-            @Suppress("DEPRECATION")
-            rootNode.recycle()
+            try {
+                @Suppress("DEPRECATION")
+                rootNode.recycle()
+            } catch (_: Exception) {}
         }
     }
 
@@ -189,7 +212,7 @@ class FocusBlockerService : AccessibilityService() {
         // 1. Direct view ID lookups (Fastest path)
         for (viewId in YOUTUBE_SHORTS_VIEW_IDS) {
             val matchingNodes = rootNode.findAccessibilityNodeInfosByViewId(viewId)
-            if (matchingNodes.isNotEmpty()) {
+            if (!matchingNodes.isNullOrEmpty()) {
                 recycleNodeList(matchingNodes)
                 return true
             }
@@ -197,13 +220,22 @@ class FocusBlockerService : AccessibilityService() {
 
         // 2. Check if the active selected bottom navigation tab is "Shorts"
         val shortsTabs = rootNode.findAccessibilityNodeInfosByText("Shorts")
-        for (tabNode in shortsTabs) {
-            if (tabNode.isSelected || tabNode.parent?.isSelected == true) {
-                recycleNodeList(shortsTabs)
-                return true
+        if (!shortsTabs.isNullOrEmpty()) {
+            for (tabNode in shortsTabs) {
+                val parent = tabNode.parent
+                val isSelected = tabNode.isSelected || (parent != null && parent.isSelected)
+                try {
+                    @Suppress("DEPRECATION")
+                    parent?.recycle()
+                } catch (_: Exception) {}
+
+                if (isSelected) {
+                    recycleNodeList(shortsTabs)
+                    return true
+                }
             }
+            recycleNodeList(shortsTabs)
         }
-        recycleNodeList(shortsTabs)
 
         // 3. Recursive inspection for content descriptions and partial view IDs
         return inspectNodeTreeRecursively(rootNode, maxDepth = 6) { node ->
@@ -232,10 +264,17 @@ class FocusBlockerService : AccessibilityService() {
         // 1. Direct view ID lookups (Instagram clips viewer)
         for (viewId in INSTAGRAM_REELS_VIEW_IDS) {
             val matchingNodes = rootNode.findAccessibilityNodeInfosByViewId(viewId)
-            if (matchingNodes.isNotEmpty()) {
-                // If it's reels_tab, ensure it's selected to avoid false positives while browsing other tabs
+            if (!matchingNodes.isNullOrEmpty()) {
                 if (viewId.contains("reels_tab")) {
-                    val isTabSelected = matchingNodes.any { it.isSelected || it.parent?.isSelected == true }
+                    val isTabSelected = matchingNodes.any {
+                        val p = it.parent
+                        val sel = it.isSelected || (p != null && p.isSelected)
+                        try {
+                            @Suppress("DEPRECATION")
+                            p?.recycle()
+                        } catch (_: Exception) {}
+                        sel
+                    }
                     recycleNodeList(matchingNodes)
                     if (isTabSelected) return true
                 } else {
@@ -247,13 +286,22 @@ class FocusBlockerService : AccessibilityService() {
 
         // 2. Check selected bottom navigation bar item for "Reels"
         val reelsTabs = rootNode.findAccessibilityNodeInfosByText("Reels")
-        for (tabNode in reelsTabs) {
-            if (tabNode.isSelected || tabNode.parent?.isSelected == true) {
-                recycleNodeList(reelsTabs)
-                return true
+        if (!reelsTabs.isNullOrEmpty()) {
+            for (tabNode in reelsTabs) {
+                val parent = tabNode.parent
+                val isSelected = tabNode.isSelected || (parent != null && parent.isSelected)
+                try {
+                    @Suppress("DEPRECATION")
+                    parent?.recycle()
+                } catch (_: Exception) {}
+
+                if (isSelected) {
+                    recycleNodeList(reelsTabs)
+                    return true
+                }
             }
+            recycleNodeList(reelsTabs)
         }
-        recycleNodeList(reelsTabs)
 
         // 3. Recursive inspection for clips/reels identifiers
         return inspectNodeTreeRecursively(rootNode, maxDepth = 6) { node ->
@@ -265,7 +313,6 @@ class FocusBlockerService : AccessibilityService() {
 
             val contentDesc = node.contentDescription?.toString()
             if (contentDesc != null) {
-                // Check if user is on the Reels tab in bottom nav
                 if (contentDesc.equals("Reels", ignoreCase = true) && node.isSelected) {
                     return@inspectNodeTreeRecursively true
                 }
@@ -298,8 +345,10 @@ class FocusBlockerService : AccessibilityService() {
         for (i in 0 until childCount) {
             val child = node.getChild(i) ?: continue
             val found = inspectNodeTreeRecursively(child, currentDepth + 1, maxDepth, predicate)
-            @Suppress("DEPRECATION")
-            child.recycle()
+            try {
+                @Suppress("DEPRECATION")
+                child.recycle()
+            } catch (_: Exception) {}
             if (found) return true
         }
 
@@ -312,8 +361,10 @@ class FocusBlockerService : AccessibilityService() {
     private fun recycleNodeList(nodes: List<AccessibilityNodeInfo>?) {
         if (nodes.isNullOrEmpty()) return
         for (node in nodes) {
-            @Suppress("DEPRECATION")
-            node.recycle()
+            try {
+                @Suppress("DEPRECATION")
+                node.recycle()
+            } catch (_: Exception) {}
         }
     }
 
