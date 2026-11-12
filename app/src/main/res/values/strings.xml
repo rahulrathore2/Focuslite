@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">FocusLite</string>
+    <string name="accessibility_service_name">FocusLite Blocker Service</string>
+    <string name="accessibility_service_summary">Blocks YouTube Shorts and Instagram Reels to protect your focus</string>
+    <string name="accessibility_service_description">FocusLite monitors YouTube and Instagram to detect when addictive short-form video reels or shorts are opened. It triggers a back navigation action to return you to your previous screen without closing the app. FocusLite processes all events locally on your device and does not read or store private personal data.</string>
+
+    <!-- UI Strings -->
+    <string name="header_tagline">Reclaim your focus &amp; time</string>
+    <string name="service_active_title">Protection is Active</string>
+    <string name="service_active_desc">FocusLite is actively monitoring and protecting your attention.</string>
+    <string name="service_inactive_title">Accessibility Permission Needed</string>
+    <string name="service_inactive_desc">To detect and exit short-form feeds, FocusLite requires Android Accessibility permission.</string>
+    <string name="btn_enable_service">Enable in Settings</string>
+    <string name="btn_service_settings">Manage Service</string>
+
+    <string name="section_rules">Blocking Rules</string>
+    <string name="block_shorts_title">Block YouTube Shorts</string>
+    <string name="block_shorts_desc">Instantly exits the Shorts player while keeping standard videos, search, and subscriptions active.</string>
+
+    <string name="block_reels_title">Block Instagram Reels</string>
+    <string name="block_reels_desc">Instantly exits the Reels viewer while allowing normal feed posts, stories, and direct messages (DMs).</string>
+
+    <string name="section_stats">Focus Protection Stats</string>
+    <string name="stats_shorts_blocked">Shorts Blocked</string>
+    <string name="stats_reels_blocked">Reels Blocked</string>
+    <string name="stats_time_saved">Estimated Time Saved</string>
+    <string name="stats_reset">Reset Counters</string>
+
+    <string name="section_privacy">Privacy &amp; Permissions</string>
+    <string name="privacy_note">FocusLite operates 100% on your device with zero network access. Your messages, searches, and browsing history are never tracked, recorded, or sent anywhere.</string>
+</resources>
